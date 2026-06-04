@@ -18,9 +18,11 @@ async function connectDB() {
 }
 
 app.get('/', async (req, res) => {
-  const database = await connectDB();
-  const total = await database.collection('contacts').countDocuments();
-  res.json({ service: 'DGR Contacts API', status: 'running', total });
+  try {
+    const database = await connectDB();
+    const total = await database.collection('contacts').countDocuments();
+    res.json({ service: 'DGR Contacts API', status: 'running', total });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/contacts/stats', async (req, res) => {
