@@ -17,7 +17,26 @@ async function connectDB() {
   return db;
 }
 
-app.get('/', async (req, res) => {
+// Fail-safe: se CONTACTS_API_KEY não estiver definida, bloqueia tudo.
+// Sem CONTACTS_API_ENFORCE=true: regista chamadas não autorizadas mas serve (observação 48h).
+// Com CONTACTS_API_ENFORCE=true: regista + 403 (modo bloqueio definitivo).
+function requireApiKey(req, res, next) {
+  const envKey = process.env.CONTACTS_API_KEY;
+  if (!envKey) return res.status(403).json({ error: 'forbidden' });
+
+  if (req.headers['x-api-key'] === envKey) return next();
+
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
+  const enforce = process.env.CONTACTS_API_ENFORCE === 'true';
+  console.warn(
+    `[CONTACTS-NOAUTH] ${new Date().toISOString()} | ${req.method} ${req.path} | IP: ${ip} | key_present: ${!!req.headers['x-api-key']} | enforce: ${enforce}`
+  );
+
+  if (enforce) return res.status(403).json({ error: 'forbidden' });
+  next();
+}
+
+app.get('/', requireApiKey, async (req, res) => {
   try {
     const database = await connectDB();
     const total = await database.collection('contacts').countDocuments();
@@ -25,7 +44,7 @@ app.get('/', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/contacts/stats', async (req, res) => {
+app.get('/api/contacts/stats', requireApiKey, async (req, res) => {
   try {
     const database = await connectDB();
     const stats = await database.collection('contacts').aggregate([
@@ -38,7 +57,7 @@ app.get('/api/contacts/stats', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/contacts', async (req, res) => {
+app.get('/api/contacts', requireApiKey, async (req, res) => {
   try {
     const database = await connectDB();
     const filter = { is_spam: { $ne: true } };
@@ -53,17 +72,13 @@ app.get('/api/contacts', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/contacts/bulk', async (req, res) => {
+app.post('/api/contacts/bulk', requireApiKey, async (req, res) => {
   try {
     const database = await connectDB();
     const { contacts } = req.body;
     if (!contacts || !Array.isArray(contacts)) return res.status(400).json({ error: 'contacts array required' });
     const ops = contacts.map(c => ({
-      updateOne: {
-        filter: { phone: c.phone },
-        update: { $set: c },
-        upsert: true
-      }
+      updateOne: { filter: { phone: c.phone }, update: { $set: c }, upsert: true }
     }));
     const result = await database.collection('contacts').bulkWrite(ops);
     const total = await database.collection('contacts').countDocuments();
@@ -71,7 +86,7 @@ app.post('/api/contacts/bulk', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.patch('/api/contacts/:phone', async (req, res) => {
+app.patch('/api/contacts/:phone', requireApiKey, async (req, res) => {
   try {
     const database = await connectDB();
     await database.collection('contacts').updateOne({ phone: req.params.phone }, { $set: req.body });
@@ -80,7 +95,8 @@ app.patch('/api/contacts/:phone', async (req, res) => {
 });
 
 app.delete('/api/contacts', async (req, res) => {
-  if (req.headers['x-admin-key'] !== process.env.ADMIN_KEY) {
+  const adminKey = process.env.ADMIN_KEY;
+  if (!adminKey || req.headers['x-admin-key'] !== adminKey) {
     return res.status(401).json({ error: 'unauthorized' });
   }
   try {
